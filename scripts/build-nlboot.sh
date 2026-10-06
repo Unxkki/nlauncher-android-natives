@@ -35,7 +35,7 @@ cmake -S "$ROOT/nlboot" -B "$NLBOOT_BUILD" ${GEN[@]+"${GEN[@]}"} \
 cmake --build "$NLBOOT_BUILD" --parallel "$JOBS"
 
 lib="$(find "$NLBOOT_BUILD" -name libnlboot.so -type f | head -n 1)"
-exe="$(find "$NLBOOT_BUILD" -name nljava -type f | head -n 1)"
+exe="$(find "$NLBOOT_BUILD" \( -name nljava -o -name libnljava.so \) -type f | head -n 1)"
 [ -n "$lib" ] || { echo "error: libnlboot.so was not produced" >&2; exit 1; }
 [ -n "$exe" ] || { echo "error: nljava was not produced" >&2; exit 1; }
 mkdir -p "$BUILD/lib"
