@@ -1,0 +1,8 @@
+/* JNI libraries: export only what the JVM looks up. */
+{
+    global:
+        Java_*;
+        JNI_On*;
+    local:
+        *;
+};

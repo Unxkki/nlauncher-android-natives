@@ -1,0 +1,31 @@
+liburing compat.h: use the kernel UAPI structs on Android
+
+LWJGL ships a hand-written liburing/compat.h that defines struct
+__kernel_timespec and struct open_how unconditionally. With the NDK (bionic)
+headers <unistd.h> and <fcntl.h> already include <linux/time_types.h> and
+<linux/openat2.h>, so the build fails with "redefinition of ..." errors.
+On __ANDROID__ include those UAPI headers instead (identical layout).
+
+--- a/modules/lwjgl/core/src/main/c/linux/liburing/include/liburing/compat.h
++++ b/modules/lwjgl/core/src/main/c/linux/liburing/include/liburing/compat.h
+@@ -12,6 +12,13 @@
+ 
+ typedef int __kernel_rwf_t;
+ 
++#ifdef __ANDROID__
++/* NLauncher: bionic's <unistd.h>/<fcntl.h> already pull in the kernel UAPI
++   definitions of these two structs (same layout), so use them instead of
++   redefining them. */
++#include <linux/time_types.h>
++#include <linux/openat2.h>
++#else
+ struct __kernel_timespec {
+ 	int64_t		tv_sec;
+ 	long long	tv_nsec;
+@@ -22,5 +29,6 @@
+ 	uint64_t	mode;
+ 	uint64_t	resolve;
+ };
++#endif
+ 
+ #endif

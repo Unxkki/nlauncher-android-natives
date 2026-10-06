@@ -1,0 +1,8 @@
+/* libjemalloc.so: export only the je_-prefixed public API (functions and
+   je_malloc_conf / je_malloc_message), like LWJGL's jemalloc build. */
+{
+    global:
+        je_*;
+    local:
+        *;
+};

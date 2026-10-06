@@ -1,0 +1,69 @@
+name: Build (self-hosted macOS)
+
+# Same Android build on the owner's Apple Silicon runner (manual only).
+# Needs: NDK r28c (28.2.13676358) in $ANDROID_NDK_HOME or
+# ~/Library/Android/sdk/ndk/28.2.13676358, cmake, a JDK (javac) in PATH or JAVA_HOME, xz.
+on:
+  workflow_dispatch:
+    inputs:
+      target_abi:
+        description: 'arm64-v8a (release target) or x86_64 (emulator)'
+        required: false
+        default: arm64-v8a
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: [self-hosted, macOS, ARM64]
+    timeout-minutes: 60
+    env:
+      TARGET_ABI: ${{ github.event.inputs.target_abi || 'arm64-v8a' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Load versions.env
+        run: grep -E '^[A-Z0-9_]+=' versions.env >> "$GITHUB_ENV"
+
+      - name: Locate NDK ${{ env.NDK_VERSION }}
+        run: |
+          set -eu
+          test "$(uname -m)" = arm64
+          ndk="${ANDROID_NDK_HOME:-}"
+          if [ -z "$ndk" ] || ! grep -q "^Pkg.Revision = $NDK_REVISION\$" "$ndk/source.properties" 2>/dev/null; then
+            ndk="$HOME/Library/Android/sdk/ndk/$NDK_REVISION"
+          fi
+          if ! grep -q "^Pkg.Revision = $NDK_REVISION\$" "$ndk/source.properties" 2>/dev/null; then
+            echo "::error::NDK $NDK_VERSION ($NDK_REVISION) not found. Install it with: sdkmanager \"ndk;$NDK_REVISION\""
+            exit 1
+          fi
+          echo "ANDROID_NDK_HOME=$ndk" >> "$GITHUB_ENV"
+          command -v cmake
+          command -v javac || test -x "${JAVA_HOME:-/nonexistent}/bin/javac"
+
+      - name: Fetch upstream sources
+        run: scripts/fetch-sources.sh
+
+      - name: Build LWJGL / FreeType / jemalloc / JNA natives
+        run: NL_BUILD_NLBOOT=0 scripts/build-android.sh
+
+      - name: Build nlboot (if present)
+        run: |
+          if [ -f nlboot/CMakeLists.txt ]; then
+            scripts/build-nlboot.sh
+          else
+            echo "nlboot/ is not in the repository yet — skipped"
+          fi
+
+      - name: Package
+        run: scripts/package.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lwjgl-${{ env.LWJGL_VERSION }}-android-${{ env.TARGET_ABI }}-macos
+          retention-days: 7
+          if-no-files-found: error
+          path: |
+            dist/*.tar.xz
+            dist/*.tar.xz.sha256

@@ -1,0 +1,12 @@
+# fetched upstream sources and download cache (scripts/fetch-sources.sh)
+/sources/
+/.cache/
+# build trees and packaged artifacts
+/build/
+/out/
+/dist/
+*.tar.xz
+*.tar.xz.sha256
+# host test downloads
+/tests/host/.jars/
+/tests/host/.work/

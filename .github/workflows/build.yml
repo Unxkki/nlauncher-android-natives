@@ -1,0 +1,176 @@
+name: Build
+
+# Android (NDK r28c, arm64-v8a) build of upstream LWJGL 3.3.3 natives + JNA jnidispatch,
+# a host smoke test of the same source lists, and a GitHub Release for tags
+# lwjgl-<LWJGL_VERSION>-nl<N> (see README.md, "Releases").
+on:
+  push:
+    branches: [main]
+    tags: ['lwjgl-*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+env:
+  TARGET_ABI: arm64-v8a
+
+jobs:
+  android:
+    name: Android arm64-v8a
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Load versions.env
+        run: grep -E '^[A-Z0-9_]+=' versions.env >> "$GITHUB_ENV"
+
+      # Pinned NDK, downloaded from Google and checked against the SHA-1 published in
+      # Google's SDK repository manifest (repository2-3.xml). We deliberately do not use
+      # the NDK preinstalled on the runner image (ANDROID_NDK_LATEST_HOME moves).
+      - name: Install NDK ${{ env.NDK_VERSION }}
+        run: |
+          set -eu
+          zip="$RUNNER_TEMP/android-ndk-$NDK_VERSION-linux.zip"
+          curl -fL --retry 3 -o "$zip" "$NDK_LINUX_URL"
+          test "$(stat -c %s "$zip")" = "$NDK_LINUX_SIZE"
+          echo "$NDK_LINUX_SHA1  $zip" | sha1sum -c -
+          unzip -q "$zip" -d "$RUNNER_TEMP"
+          rm -f "$zip"
+          ndk="$RUNNER_TEMP/android-ndk-$NDK_VERSION"
+          grep -q "^Pkg.Revision = $NDK_REVISION\$" "$ndk/source.properties"
+          echo "ANDROID_NDK_HOME=$ndk" >> "$GITHUB_ENV"
+
+      - uses: actions/setup-java@v4   # javac -h for the JNA JNI headers
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - uses: actions/cache@v4
+        with:
+          path: .cache/downloads
+          key: sources-${{ hashFiles('versions.env') }}
+
+      - name: Fetch upstream sources
+        run: scripts/fetch-sources.sh
+
+      - name: Build LWJGL / FreeType / jemalloc / JNA natives
+        run: NL_BUILD_NLBOOT=0 scripts/build-android.sh
+
+      - name: Build nlboot (if present)
+        run: |
+          if [ -f nlboot/CMakeLists.txt ]; then
+            scripts/build-nlboot.sh
+          else
+            echo "nlboot/ is not in the repository yet — skipped"
+          fi
+
+      - name: Check ELF properties
+        run: |
+          set -eu
+          readelf="$(ls "$ANDROID_NDK_HOME"/toolchains/llvm/prebuilt/*/bin/llvm-readelf | head -n 1)"
+          for f in build/android-$TARGET_ABI/lib/*.so; do
+            echo "== $f"
+            "$readelf" -h "$f" | grep -q 'AArch64'
+            # every PT_LOAD must be 16 KiB aligned (Android 15+ 16 KB page devices)
+            "$readelf" -lW "$f" | awk '$1=="LOAD" && $NF!="0x4000" {bad=1} END {exit bad}'
+            # no initial-exec TLS (bionic refuses to dlopen such libraries)
+            if "$readelf" -d "$f" | grep -q STATIC_TLS; then
+              echo "::error::$f uses initial-exec (static) TLS"; exit 1
+            fi
+            "$readelf" -d "$f" | grep NEEDED
+          done
+
+      - name: Package
+        run: scripts/package.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lwjgl-${{ env.LWJGL_VERSION }}-android-arm64
+          if-no-files-found: error
+          path: |
+            dist/*.tar.xz
+            dist/*.tar.xz.sha256
+
+  host-test:
+    name: Host smoke test (linux x86_64)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Install a TrueType font for the FreeType/HarfBuzz checks
+        run: sudo apt-get install -y --no-install-recommends fonts-dejavu-core
+
+      - uses: actions/cache@v4
+        with:
+          path: .cache/downloads
+          key: sources-${{ hashFiles('versions.env') }}
+
+      - name: Fetch upstream sources
+        run: scripts/fetch-sources.sh
+
+      - name: Build for the host (-DNL_HOST=ON)
+        run: scripts/build-host.sh
+
+      - name: Load the libraries into a JVM with the stock LWJGL / JNA jars
+        run: tests/host/run.sh build/host
+
+  release:
+    name: GitHub Release
+    if: startsWith(github.ref, 'refs/tags/lwjgl-')
+    needs: [android, host-test]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Load versions.env
+        run: grep -E '^[A-Z0-9_]+=' versions.env >> "$GITHUB_ENV"
+
+      - name: Tag must match versions.env
+        run: |
+          want="lwjgl-$LWJGL_VERSION-nl$NL_BUILD_NUMBER"
+          if [ "$GITHUB_REF_NAME" != "$want" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match versions.env ($want)"
+            exit 1
+          fi
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: lwjgl-${{ env.LWJGL_VERSION }}-android-arm64
+          path: dist
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          cd dist
+          sha256sum -c ./*.sha256
+          tar -xJOf "lwjgl-$LWJGL_VERSION-android-arm64.tar.xz" "lwjgl-$LWJGL_VERSION-android-arm64/BUILD-INFO.txt" > BUILD-INFO.txt
+          {
+            echo "Upstream LWJGL $LWJGL_VERSION native libraries for Android arm64-v8a (API $ANDROID_API+, NDK $NDK_VERSION),"
+            echo "built from unmodified upstream sources except for the patches listed below."
+            echo
+            echo '```'
+            cat BUILD-INFO.txt
+            echo '```'
+          } > notes.md
+          gh release create "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "$GITHUB_REF_NAME" \
+            --notes-file notes.md \
+            ./*.tar.xz ./*.tar.xz.sha256
