@@ -28,6 +28,13 @@
 #include <android/log.h>
 #endif
 
+/* The NDK's <jni.h> is the Android (ART) header and stops at JNI_VERSION_1_6;
+ * HotSpot accepts the JNI Invocation API version constants from the JNI
+ * specification (JNI_VERSION_1_8 = 0x00010008). */
+#ifndef JNI_VERSION_1_8
+#define JNI_VERSION_1_8 0x00010008
+#endif
+
 typedef jint (JNICALL *create_vm_fn)(JavaVM **, void **, void *);
 
 /* ------------------------------------------------------------------ log -- */
